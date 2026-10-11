@@ -51,6 +51,7 @@ public:
 
 #ifndef _WIN32
 	// GeneralsX @bugfix felipebraz 23/03/2026 Set the asset root as a fallback search directory for relative paths.
+	virtual AsciiString getAssetRootPath() const override;
 	virtual void setAssetRootPath(const AsciiString& path) override;
 #endif
 

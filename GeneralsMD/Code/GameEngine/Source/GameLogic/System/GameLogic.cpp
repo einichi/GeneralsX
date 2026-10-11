@@ -43,6 +43,8 @@
 #include "Common/FramePacer.h"
 #include "Common/GameAudio.h"
 #include "Common/GameEngine.h"
+#include "Common/GameDataError.h"
+#include "Common/LocalFileSystem.h"
 #include "Common/GameLOD.h"
 #include "Common/GameState.h"
 
@@ -84,6 +86,8 @@
 #include "GameClient/Drawable.h"
 #include "GameClient/GameClient.h"
 #include "GameClient/GameText.h"
+#include "GameClient/MessageBox.h"
+#include "GameClient/Shell.h"
 #include "GameClient/GUICallbacks.h"
 #include "GameClient/InGameUI.h"
 #include "GameClient/LoadScreen.h"
@@ -101,6 +105,7 @@
 #include "GameLogic/CrateSystem.h"
 #include "GameLogic/FPUControl.h"
 #include "GameLogic/GameLogic.h"
+#include "GameLogic/RequiredScriptFile.h"
 #include "GameLogic/Locomotor.h"
 #include "GameLogic/Object.h"
 #include "GameLogic/Module/AIUpdate.h"
@@ -1187,6 +1192,30 @@ void GameLogic::startNewGame( Bool loadingSaveGame )
 	{
 		tryStartNewGame(loadingSaveGame);
 	}
+	// GeneralsX @bugfix Codex 11/10/2026 Return to the menu after a recoverable game-data error.
+	catch (const GameDataError& error)
+	{
+		AsciiString message;
+		const AsciiString assetRoot = TheLocalFileSystem->getAssetRootPath();
+		message.format("%s\nGame data directory: %s", error.what(),
+			assetRoot.isNotEmpty() ? assetRoot.str() : "(current working directory)");
+		fprintf(stderr, "[GAME_DATA_ERROR] %s\n", message.str());
+		fflush(stderr);
+		// Automated/headless startup must fail rather than report a successful match.
+		if (TheGlobalData->m_headless || TheGlobalData->m_initialFile.isNotEmpty()) throw;
+		deleteLoadScreen();
+		m_startNewGame = FALSE;
+		TheWritableGlobalData->m_loadScreenRender = FALSE;
+		setLoadingMap(FALSE);
+		setLoadingSave(FALSE);
+		clearGameData(FALSE);
+		TheShell->reset();
+		TheShell->push("Menus/MainMenu.wnd");
+		TheShell->showShell();
+		UnicodeString body;
+		body.translate(message);
+		MessageBoxOk(TheGameText->fetch("GUI:ErrorStartingGame"), body, nullptr);
+	}
 	catch (QuitGameException&)
 	{
 		if (m_quitToDesktopAfterMatch && TheGameEngine)
@@ -1674,16 +1703,13 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 				ChunkInputStream *pStrm = &theInputStream;
 				DataChunkInput file( pStrm );
 				file.registerParser( "PlayerScriptsList", AsciiString::TheEmptyString, ScriptList::ParseScriptsDataChunk );
-				if (!file.parse(nullptr)) {
-#ifdef ALLOW_DEBUG_UTILS
-					fprintf(stderr, "[SKIRMISH_DIAG] ERROR parsing MultiplayerScripts.scb\n");
-					fflush(stderr);
-#endif
-					DEBUG_LOG(("ERROR - Unable to read in multiplayer scripts."));
-					return;
-				}
+				parseRequiredScriptFile(file, nullptr, path);
 				ScriptList *scripts[MAX_PLAYER_COUNT];
 				Int count = ScriptList::getReadScripts(scripts);
+				if (!count || !scripts[0] || !scripts[0]->getScript() || !TheSidesList->getSideInfo(0)->getScriptList()) {
+					for (Int i = 0; i < count; ++i) deleteInstance(scripts[i]);
+					throw GameDataError(path, "Missing multiplayer victory scripts or neutral script list.");
+				}
 #ifdef ALLOW_DEBUG_UTILS
 				fprintf(stderr, "[SKIRMISH_DIAG] Parsed MultiplayerScripts.scb scriptCount=%d\n", count);
 				fflush(stderr);
@@ -1709,10 +1735,8 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 			}
 			else
 			{
-#ifdef ALLOW_DEBUG_UTILS
-				fprintf(stderr, "[SKIRMISH_DIAG] FAILED to open MultiplayerScripts.scb path='%s'\n", path.str());
-				fflush(stderr);
-#endif
+				// GeneralsX @bugfix Codex 11/10/2026 Abort incomplete match data before placing player objects.
+				throw GameDataError(path, "Missing multiplayer victory scripts. Copy the complete game directory, including Data/Scripts.");
 			}
 		}
 
@@ -3918,6 +3942,8 @@ void GameLogic::update()
     Profile::StopRange("map_load");
 #endif
 		m_startNewGame = FALSE;
+		// GeneralsX @bugfix Codex 11/10/2026 Stop this frame after startup cleared a failed match.
+		if (!isInGame()) return;
 
 	#ifdef DUMP_PERF_STATS
 		char Buf[1024];

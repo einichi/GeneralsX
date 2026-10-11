@@ -46,6 +46,7 @@
 
 #define DEFINE_SCIENCE_AVAILABILITY_NAMES
 
+#include "Common/GameDataError.h"
 #include "Common/ActionManager.h"
 #include "Common/BuildAssistant.h"
 #include "Common/CRCDebug.h"
@@ -727,11 +728,10 @@ void Player::setDefaultTeam() {
 	tname.set("team");
 	tname.concat(m_playerName);
 	Team *dt = TheTeamFactory->findTeam(tname);
-	DEBUG_ASSERTCRASH(dt, ("no team"));
-	if (dt) {
-		m_defaultTeam = dt;
-		dt->setActive();
-	}
+	// GeneralsX @bugfix Codex 11/10/2026 Abort incomplete match data before placing player objects.
+	if (!dt) throw GameDataError(tname, "Missing player default team. Check the map and skirmish script data.");
+	m_defaultTeam = dt;
+	dt->setActive();
 }
 
 //=============================================================================
@@ -780,7 +780,9 @@ void Player::initFromDict(const Dict* d)
 			}
 		}
 
-		DEBUG_ASSERTCRASH(skirmish, ("Could not find skirmish player for side %s... quietly making into nonskirmish.", getSide().str()));
+		// GeneralsX @bugfix Codex 11/10/2026 Do not silently turn an unsupported computer faction into a human.
+		if (!skirmish && !d->getBool(TheKey_playerIsHuman))
+			throw GameDataError(getSide(), "No skirmish faction definition for this computer player. Check the map and script data.");
 		if (!skirmish)
 			forceHuman = true;
 
@@ -860,7 +862,10 @@ void Player::initFromDict(const Dict* d)
 			m_playerName = qualTemplatePlayerName;
 			AsciiString qualifier;
 			qualifier.format("%d", m_mpStartIndex);
-			ScriptList *scripts = TheSidesList->getSkirmishSideInfo(skirmishNdx)->getScriptList()->duplicateAndQualify(
+			// GeneralsX @bugfix Codex 11/10/2026 Reject absent faction scripts instead of dereferencing a null list.
+			ScriptList *sourceScripts = TheSidesList->getSkirmishSideInfo(skirmishNdx)->getScriptList();
+			if (!sourceScripts || (!sourceScripts->getScript() && !sourceScripts->getScriptGroup())) throw GameDataError(pname, "Missing faction skirmish script list.");
+			ScriptList *scripts = sourceScripts->duplicateAndQualify(
 						qualifier, qualTemplatePlayerName, pname);
 
 			deleteInstance(TheSidesList->getSideInfo(getPlayerIndex())->getScriptList());

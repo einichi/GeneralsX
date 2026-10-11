@@ -428,6 +428,12 @@ AsciiString StdLocalFileSystem::normalizePath(const AsciiString& filePath) const
 // GeneralsX @bugfix felipebraz 23/03/2026 Receive the asset root path from StdBIGFileSystem after it resolves
 // CNC_GENERALS_ZH_PATH. Used as a fallback in fixFilenameFromWindowsPath so that loose data files
 // (e.g. Data\Scripts\SkirmishScripts.scb) can be found even when cwd != asset root directory.
+// GeneralsX @bugfix Codex 11/10/2026 Include the selected data directory in match-load errors.
+AsciiString StdLocalFileSystem::getAssetRootPath() const
+{
+	return AsciiString(s_assetFallbackPath.string().c_str());
+}
+
 void StdLocalFileSystem::setAssetRootPath(const AsciiString& path)
 {
 	std::string p(path.str());

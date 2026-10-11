@@ -1,6 +1,12 @@
 {
 	"version": "2.0.0",
 	"tasks": [
+        {
+            "label": "[QA] Game data regression tests",
+            "type": "shell",
+            "command": "python3 scripts/qa/smoke/test-game-data-errors.py",
+            "problemMatcher": []
+        },
 		{
 			"label": "[Platform] Configure",
 			"type": "shell",

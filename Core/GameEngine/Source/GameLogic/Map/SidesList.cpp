@@ -45,6 +45,8 @@
 
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
 
+#include "Common/GameDataError.h"
+#include "GameLogic/RequiredScriptFile.h"
 #include "Common/DataChunk.h"
 #include "Common/GameState.h"
 #include "Common/PlayerTemplate.h"
@@ -493,6 +495,24 @@ static Bool ParseTeamsDataChunk(DataChunkInput &file, DataChunkInfo *info, void 
 
 void SidesList::prepareForMP_or_Skirmish()
 {
+	Bool gotScripts = false;
+	for (Int i=0; i<m_numSides; i++) {
+		if (m_sides[i].getDict()->getAsciiString(TheKey_playerFaction) == "FactionCivilian") {
+			// Don't consider FactionCivilian.
+			continue;
+		}
+		if (m_sides[i].getScriptList()==nullptr) continue;
+		if (m_sides[i].getScriptList()->getScript() != nullptr ||
+			m_sides[i].getScriptList()->getScriptGroup()!=nullptr) {
+			gotScripts = true;
+		}
+	}
+	AsciiString path = "Data\\Scripts\\SkirmishScripts.scb";
+	CachedFileInputStream theInputStream;
+	// GeneralsX @bugfix Codex 11/10/2026 Check the VFS before discarding map teams and sides.
+	if (!gotScripts && !theInputStream.open(path))
+		throw GameDataError(path, "Missing required skirmish scripts. Copy the complete game directory, including Data/Scripts.");
+
 	m_skirmishTeamrec.clear();
 	Int i;
 	for (i = 0; i < getNumTeams(); i++)
@@ -519,88 +539,38 @@ void SidesList::prepareForMP_or_Skirmish()
 		removeSide(i);
 		i--;
 	}
-	Bool gotScripts = false;
-	for (i=0; i<m_numSkirmishSides; i++) {
-		if (m_skirmishSides[i].getDict()->getAsciiString(TheKey_playerFaction) == "FactionCivilian") {
-			// Don't consider FactionCivilian.
-			continue;
-		}
-		if (m_skirmishSides[i].getScriptList()==nullptr) continue;
-		if (m_skirmishSides[i].getScriptList()->getScript() != nullptr ||
-			m_skirmishSides[i].getScriptList()->getScriptGroup()!=nullptr) {
-			gotScripts = true;
-		}
-	}
 	if (!gotScripts) {
-		// GeneralsX @bugfix Copilot 22/03/2026 Load default skirmish scripts relative to the configured asset root.
-		AsciiString path = "Data\\Scripts\\SkirmishScripts.scb";
-#ifdef ALLOW_DEBUG_UTILS
-		// GeneralsX @bugfix Copilot 22/03/2026 Emit runtime diagnostics for SkirmishScripts loading on Linux.
-		fprintf(stderr, "[SKIRMISH_DIAG] SidesList::prepareForMP_or_Skirmish gotScripts=false path='%s'\n", path.str());
-		fflush(stderr);
-#endif
-		DEBUG_LOG(("Skirmish map using standard scripts"));
+		// GeneralsX @bugfix Codex 11/10/2026 Require a successful VFS read of default faction scripts.
+		for (i = 0; i < MAX_SKIRMISH_SIDES; ++i) static_readPlayerNames[i].clear();
 		m_skirmishTeamrec.clear();
-		CachedFileInputStream theInputStream;
-		if (theInputStream.open(path)) {
-#ifdef ALLOW_DEBUG_UTILS
-				fprintf(stderr, "[SKIRMISH_DIAG] Opened SkirmishScripts.scb successfully\n");
-				fflush(stderr);
-#endif
-				ChunkInputStream *pStrm = &theInputStream;
-				DataChunkInput file( pStrm );
-				file.registerParser( "PlayerScriptsList", AsciiString::TheEmptyString, ScriptList::ParseScriptsDataChunk );
-				file.registerParser( "ScriptsPlayers", AsciiString::TheEmptyString, ParsePlayersDataChunk );
-				file.registerParser( "ScriptTeams", AsciiString::TheEmptyString, ParseTeamsDataChunk );
-				if (!file.parse(this)) {
-#ifdef ALLOW_DEBUG_UTILS
-					fprintf(stderr, "[SKIRMISH_DIAG] ERROR parsing SkirmishScripts.scb\n");
-					fflush(stderr);
-#endif
-					DEBUG_LOG(("ERROR - Unable to read in skirmish scripts."));
-					return;
+		DataChunkInput file(&theInputStream);
+		file.registerParser("PlayerScriptsList", AsciiString::TheEmptyString, ScriptList::ParseScriptsDataChunk);
+		file.registerParser("ScriptsPlayers", AsciiString::TheEmptyString, ParsePlayersDataChunk);
+		file.registerParser("ScriptTeams", AsciiString::TheEmptyString, ParseTeamsDataChunk);
+		parseRequiredScriptFile(file, this, path);
+		ScriptList *scripts[MAX_PLAYER_COUNT];
+		Int count = ScriptList::getReadScripts(scripts);
+		if (!count) throw GameDataError(path, "No skirmish script lists were loaded.");
+		for (i = 0; i < count; ++i) {
+			Int curSide = -1;
+			for (Int j = 0; j < m_numSkirmishSides; ++j) {
+				AsciiString name = getSkirmishSideInfo(j)->getDict()->getAsciiString(TheKey_playerName);
+				if (name == static_readPlayerNames[i]) {
+					curSide = j;
+					break;
 				}
-				ScriptList *scripts[MAX_PLAYER_COUNT];
-				Int count = ScriptList::getReadScripts(scripts);
-#ifdef ALLOW_DEBUG_UTILS
-				fprintf(stderr, "[SKIRMISH_DIAG] Parsed SkirmishScripts.scb scriptCount=%d\n", count);
-				fflush(stderr);
-#endif
-				Int i;
-				for (i=0; i<count; i++) {
-					Int curSide = -1;
-					Int j;
-					for (j=0; j<m_numSkirmishSides; j++) {
- 						AsciiString name = getSkirmishSideInfo(j)->getDict()->getAsciiString(TheKey_playerName);
-						if (name == static_readPlayerNames[i]) {
-							curSide = j;
-							break;
-						}
-					}
-					if (curSide == -1)
-					{
-						deleteInstance(scripts[i]);
-						scripts[i] = nullptr;
-						continue;
-					}
-
-					deleteInstance(getSkirmishSideInfo(curSide)->getScriptList());
-					getSkirmishSideInfo(curSide)->setScriptList(scripts[i]);
-					scripts[i] = nullptr;
-				}
-				for (i=0; i<MAX_SKIRMISH_SIDES; i++) {
-					static_readPlayerNames[i].clear();
-				}
-		} else {
-#ifdef ALLOW_DEBUG_UTILS
-			fprintf(stderr, "[SKIRMISH_DIAG] FAILED to open SkirmishScripts.scb path='%s'\n", path.str());
-			fflush(stderr);
-#endif
+			}
+			if (curSide == -1) {
+				deleteInstance(scripts[i]);
+				continue;
+			}
+			deleteInstance(getSkirmishSideInfo(curSide)->getScriptList());
+			getSkirmishSideInfo(curSide)->setScriptList(scripts[i]);
 		}
-
-
+		for (i = 0; i < MAX_SKIRMISH_SIDES; ++i) static_readPlayerNames[i].clear();
 	}
 }
+
 
 
 Bool SidesList::isPlayerDefaultTeam(TeamsInfo *t)

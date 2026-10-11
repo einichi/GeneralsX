@@ -2,6 +2,19 @@
 
 This folder is organized by function for easier maintenance and discovery.
 
+`qa/smoke/inspect-skirmish-assets.py ASSET_ROOT` performs a read-only check of
+required skirmish SCB candidates at the selected root and in BIG archives. It
+reports nested loose files and Tournament Desert archive candidates in JSON;
+exit 1 indicates missing script candidates or an archive inspection error.
+It does not execute scripts or reproduce the engine's full VFS precedence.
+
+`python3 qa/smoke/test-game-data-errors.py` compiles and runs standalone C++17
+regressions for Steam/EA root selection, partial script-read cleanup, and match
+startup error recovery in both games. Set `CXX` to choose a compiler. Optional
+`--asset-root PATH` checks selection against a real Zero Hour installation without
+changing its files. The tests use subsystem doubles and do not replace a full
+engine build or an in-game smoke test.
+
 ## Directory Structure
 
 ### `build/` - Build & Deployment Scripts per Platform

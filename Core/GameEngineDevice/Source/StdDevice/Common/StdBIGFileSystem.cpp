@@ -35,10 +35,12 @@
 #include "Common/LocalFileSystem.h"
 #include "Common/Registry.h"
 
+#include "StdDevice/Common/GameAssetRoot.h"
 #include "StdDevice/Common/StdBIGFile.h"
 #include "StdDevice/Common/StdBIGFileSystem.h"
 #include "Utility/endian_compat.h"
 
+#include <stdexcept>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -63,6 +65,12 @@ static const char* kPrimaryAssetEnvGenerals = "CNC_GENERALS_PATH";
 static const char* kPrimaryAssetEnvZH = "CNC_GENERALS_ZH_PATH";
 static const char* kPrimaryAssetIniKey = "AssetPath";
 static const char* kAssetPathSection = "Paths";
+
+#if RTS_ZEROHOUR
+static const Bool kPrimaryZeroHour = TRUE;
+#else
+static const Bool kPrimaryZeroHour = FALSE;
+#endif
 
 #if RTS_ZEROHOUR
 static const char* kBaseGeneralsAssetEnv = "CNC_GENERALS_PATH";
@@ -297,15 +305,27 @@ static Bool sanitizeConfiguredPath(const char* rawValue, AsciiString& sanitizedP
 // GeneralsX @bugfix UnicodeApocalypse 11/09/2026 allowPatchPrecedence must be FALSE for fallback
 // roots so their Patch*.big can't outrank content already loaded from the primary root.
 template <typename TBigFileSystem>
-static Bool tryLoadBigFiles(TBigFileSystem* fileSystem, const AsciiString& directory, const char* sourceTag, Bool overwrite = FALSE, Bool allowPatchPrecedence = TRUE)
+static Bool tryLoadBigFiles(TBigFileSystem* fileSystem, AsciiString directory, const char* sourceTag, Bool overwrite = FALSE, Bool allowPatchPrecedence = TRUE, AsciiString* loadedDirectory = nullptr, Bool zeroHour = kPrimaryZeroHour)
 {
 	if (directory.isEmpty()) {
 		return FALSE;
 	}
 
+	// GeneralsX @bugfix Codex 11/10/2026 Keep loose files and archives on the same retail root.
+	const std::filesystem::path resolved = GameAssetRoot::resolve(directory.str(), zeroHour);
+	if (resolved.empty()) {
+		fprintf(stderr, "[ASSET_ROOT] Cannot select %s installation in '%s'; select the game directory containing %s directly.\n",
+			zeroHour ? "Zero Hour" : "Generals", directory.str(), zeroHour ? "INIZH.big" : "INI.big");
+		fflush(stderr);
+		return FALSE;
+	}
+	directory = std::filesystem::absolute(resolved).lexically_normal().string().c_str();
 	DEBUG_LOG(("StdBIGFileSystem::init - trying '%s' assets directory: %s", sourceTag, directory.str()));
 	const Bool loaded = fileSystem->loadBigFilesFromDirectory(directory, "*.big", overwrite, allowPatchPrecedence);
 	if (loaded) {
+		if (loadedDirectory) *loadedDirectory = directory;
+		fprintf(stderr, "[ASSET_ROOT] Mounted %s path='%s'\n", sourceTag, directory.str());
+		fflush(stderr);
 		DEBUG_LOG(("StdBIGFileSystem::init - loaded BIG files from %s (%s)", directory.str(), sourceTag));
 	}
 
@@ -353,11 +373,7 @@ static Bool loadPrimaryGameAssets(TBigFileSystem* fileSystem, AsciiString* loade
 	AsciiString sanitizedPrimaryEnvPath;
 	if (sanitizeConfiguredPath(primaryEnvValue, sanitizedPrimaryEnvPath)) {
 		fprintf(stderr, "[ASSET_ROOT] Trying env %s='%s'\n", primaryEnvName, sanitizedPrimaryEnvPath.str());
-		if (tryLoadBigFiles(fileSystem, sanitizedPrimaryEnvPath, "env")) {
-			fprintf(stderr, "[ASSET_ROOT] Selected source=env path='%s'\n", sanitizedPrimaryEnvPath.str());
-			if (loadedDirectory != nullptr) {
-				*loadedDirectory = sanitizedPrimaryEnvPath;
-			}
+		if (tryLoadBigFiles(fileSystem, sanitizedPrimaryEnvPath, "env", FALSE, TRUE, loadedDirectory)) {
 			return TRUE;
 		}
 		fprintf(stderr, "[ASSET_ROOT] Env path '%s' did not provide BIG files\n", sanitizedPrimaryEnvPath.str());
@@ -367,11 +383,7 @@ static Bool loadPrimaryGameAssets(TBigFileSystem* fileSystem, AsciiString* loade
 	const char* compatibilityEnvValue = getenv("GENERALSX_ASSET_PATH");
 	AsciiString sanitizedCompatibilityEnvPath;
 	if (sanitizeConfiguredPath(compatibilityEnvValue, sanitizedCompatibilityEnvPath)) {
-		if (tryLoadBigFiles(fileSystem, sanitizedCompatibilityEnvPath, "env-compat")) {
-			fprintf(stderr, "[ASSET_ROOT] Selected source=env-compat path='%s'\n", sanitizedCompatibilityEnvPath.str());
-			if (loadedDirectory != nullptr) {
-				*loadedDirectory = sanitizedCompatibilityEnvPath;
-			}
+		if (tryLoadBigFiles(fileSystem, sanitizedCompatibilityEnvPath, "env-compat", FALSE, TRUE, loadedDirectory)) {
 			return TRUE;
 		}
 	}
@@ -382,10 +394,7 @@ static Bool loadPrimaryGameAssets(TBigFileSystem* fileSystem, AsciiString* loade
 	const char* legacyEnvValue = getenv("CNC_GENERALS_INSTALLPATH");
 #endif
 	if (legacyEnvValue != nullptr && legacyEnvValue[0] != '\0') {
-		if (tryLoadBigFiles(fileSystem, AsciiString(legacyEnvValue), "legacy-env")) {
-			if (loadedDirectory != nullptr) {
-				*loadedDirectory = legacyEnvValue;
-			}
+		if (tryLoadBigFiles(fileSystem, AsciiString(legacyEnvValue), "legacy-env", FALSE, TRUE, loadedDirectory)) {
 			return TRUE;
 		}
 	}
@@ -393,22 +402,14 @@ static Bool loadPrimaryGameAssets(TBigFileSystem* fileSystem, AsciiString* loade
 	AsciiString iniPath;
 	if (tryResolveFromIni(exeDirectory, kPrimaryAssetIniKey, iniPath)) {
 		fprintf(stderr, "[ASSET_ROOT] Trying ini [Paths]%s='%s'\n", kPrimaryAssetIniKey, iniPath.str());
-		if (tryLoadBigFiles(fileSystem, iniPath, "ini")) {
-			fprintf(stderr, "[ASSET_ROOT] Selected source=ini path='%s'\n", iniPath.str());
-			if (loadedDirectory != nullptr) {
-				*loadedDirectory = iniPath;
-			}
+		if (tryLoadBigFiles(fileSystem, iniPath, "ini", FALSE, TRUE, loadedDirectory)) {
 			return TRUE;
 		}
 	}
 
 	AsciiString defaultPath;
 	if (GetStringFromRegistry("", "InstallPath", defaultPath)) {
-		if (tryLoadBigFiles(fileSystem, defaultPath, "default-registry")) {
-			fprintf(stderr, "[ASSET_ROOT] Selected source=default path='%s'\n", defaultPath.str());
-			if (loadedDirectory != nullptr) {
-				*loadedDirectory = defaultPath;
-			}
+		if (tryLoadBigFiles(fileSystem, defaultPath, "default-registry", FALSE, TRUE, loadedDirectory)) {
 			return TRUE;
 		}
 	}
@@ -417,27 +418,20 @@ static Bool loadPrimaryGameAssets(TBigFileSystem* fileSystem, AsciiString* loade
 	if (exeDirectory.isNotEmpty()) {
 		AsciiString resourcesPath = exeDirectory;
 		resourcesPath.concat("/../Resources");
-		if (tryLoadBigFiles(fileSystem, resourcesPath, "default-resources")) {
+		if (tryLoadBigFiles(fileSystem, resourcesPath, "default-resources", FALSE, TRUE, loadedDirectory)) {
 			return TRUE;
 		}
 	}
 #endif
 
 	if (exeDirectory.isNotEmpty()) {
-		if (tryLoadBigFiles(fileSystem, exeDirectory, "default-exedir")) {
-			if (loadedDirectory != nullptr) {
-				*loadedDirectory = exeDirectory;
-			}
+		if (tryLoadBigFiles(fileSystem, exeDirectory, "default-exedir", FALSE, TRUE, loadedDirectory)) {
 			return TRUE;
 		}
 	}
 
 	DEBUG_LOG(("StdBIGFileSystem::init - trying current working directory as last-resort assets path"));
-	if (fileSystem->loadBigFilesFromDirectory("", "*.big")) {
-		fprintf(stderr, "[ASSET_ROOT] Selected source=current-working-directory\n");
-		if (loadedDirectory != nullptr) {
-			*loadedDirectory = AsciiString::TheEmptyString;
-		}
+	if (tryLoadBigFiles(fileSystem, AsciiString("."), "current-working-directory", FALSE, TRUE, loadedDirectory)) {
 		return TRUE;
 	}
 
@@ -451,21 +445,21 @@ static void loadBaseGeneralsAssetsForZH(TBigFileSystem* fileSystem, const AsciiS
 	// GeneralsX @feature GitHubCopilot 16/03/2026 Resolve base Generals asset directory for ZH by ENV > INI > default.
 	const char* baseEnvValue = getenv(kBaseGeneralsAssetEnv);
 	if (baseEnvValue != nullptr && baseEnvValue[0] != '\0') {
-		if (tryLoadBigFiles(fileSystem, AsciiString(baseEnvValue), "env-generals", FALSE, FALSE)) {
+		if (tryLoadBigFiles(fileSystem, AsciiString(baseEnvValue), "env-generals", FALSE, FALSE, nullptr, FALSE)) {
 			return;
 		}
 	}
 
 	const char* compatibilityBaseEnvValue = getenv("GENERALSX_GENERALS_ASSET_PATH");
 	if (compatibilityBaseEnvValue != nullptr && compatibilityBaseEnvValue[0] != '\0') {
-		if (tryLoadBigFiles(fileSystem, AsciiString(compatibilityBaseEnvValue), "env-generals-compat", FALSE, FALSE)) {
+		if (tryLoadBigFiles(fileSystem, AsciiString(compatibilityBaseEnvValue), "env-generals-compat", FALSE, FALSE, nullptr, FALSE)) {
 			return;
 		}
 	}
 
 	const char* legacyGeneralsEnvValue = getenv("CNC_GENERALS_INSTALLPATH");
 	if (legacyGeneralsEnvValue != nullptr && legacyGeneralsEnvValue[0] != '\0') {
-		if (tryLoadBigFiles(fileSystem, AsciiString(legacyGeneralsEnvValue), "legacy-env-generals", FALSE, FALSE)) {
+		if (tryLoadBigFiles(fileSystem, AsciiString(legacyGeneralsEnvValue), "legacy-env-generals", FALSE, FALSE, nullptr, FALSE)) {
 			return;
 		}
 	}
@@ -475,27 +469,36 @@ static void loadBaseGeneralsAssetsForZH(TBigFileSystem* fileSystem, const AsciiS
 
 	AsciiString iniPath;
 	if (tryResolveFromIni(exeDirectory, kBaseGeneralsAssetIniKey, iniPath)) {
-		if (tryLoadBigFiles(fileSystem, iniPath, "ini-generals", FALSE, FALSE)) {
+		if (tryLoadBigFiles(fileSystem, iniPath, "ini-generals", FALSE, FALSE, nullptr, FALSE)) {
 			return;
 		}
 	}
 
 	AsciiString installPath;
 	GetStringFromGeneralsRegistry("", "InstallPath", installPath);
-	if (tryLoadBigFiles(fileSystem, installPath, "default-registry-generals", FALSE, FALSE)) {
+	if (tryLoadBigFiles(fileSystem, installPath, "default-registry-generals", FALSE, FALSE, nullptr, FALSE)) {
 		return;
 	}
 
 	if (zhAssetDirectory.isNotEmpty()) {
 		AsciiString siblingGenerals = zhAssetDirectory;
 		siblingGenerals.concat("/../Generals");
-		if (tryLoadBigFiles(fileSystem, siblingGenerals, "default-sibling-generals", FALSE, FALSE)) {
+		if (tryLoadBigFiles(fileSystem, siblingGenerals, "default-sibling-generals", FALSE, FALSE, nullptr, FALSE)) {
+			return;
+		}
+
+		// GeneralsX @bugfix Codex 11/10/2026 Resolve the base-game sibling in an EA combined installation.
+		const auto bundleParent = std::filesystem::path(zhAssetDirectory.str()).parent_path();
+		const auto baseSibling = GameAssetRoot::resolve(bundleParent, false);
+		// Only accept a detected retail installation here, not an arbitrary recursive parent.
+		if (!baseSibling.empty() && GameAssetRoot::hasMarker(baseSibling, "ini.big") &&
+			tryLoadBigFiles(fileSystem, AsciiString(baseSibling.string().c_str()), "default-bundle-generals", FALSE, FALSE, nullptr, FALSE)) {
 			return;
 		}
 
 		AsciiString steamGenerals = zhAssetDirectory;
 		steamGenerals.concat("/ZH_Generals");
-		if (tryLoadBigFiles(fileSystem, steamGenerals, "default-zh-generals", FALSE, FALSE)) {
+		if (tryLoadBigFiles(fileSystem, steamGenerals, "default-zh-generals", FALSE, FALSE, nullptr, FALSE)) {
 			return;
 		}
 	}
@@ -519,7 +522,12 @@ void StdBIGFileSystem::init() {
 	AsciiString primaryAssetsDirectory;
 	const Bool loadedPrimaryAssets = loadPrimaryGameAssets(this, &primaryAssetsDirectory);
 	DEBUG_ASSERTCRASH(loadedPrimaryAssets, ("No BIG files were loaded for the primary game assets."));
-	(void)loadedPrimaryAssets;
+	// GeneralsX @bugfix Codex 11/10/2026 Do not initialize the engine with no primary game data.
+	if (!loadedPrimaryAssets) {
+		fprintf(stderr, "[ASSET_ROOT] No game data could be loaded. Select the complete game directory containing INI.big (Generals) or INIZH.big (Zero Hour).\n");
+		fflush(stderr);
+		throw std::runtime_error("No primary game data could be loaded.");
+	}
 
 	// GeneralsX @bugfix felipebraz 23/03/2026 Propagate the resolved asset root to the local file system.
 	// On Linux/macOS the binary cwd and the game data directory (asset root) are separate. Loose files like
@@ -709,6 +717,11 @@ Bool StdBIGFileSystem::loadBigFilesFromDirectory(AsciiString dir, AsciiString fi
 	Bool actuallyAdded = FALSE;
 	FilenameListIter it = filenameList.begin();
 	while (it != filenameList.end()) {
+		// GeneralsX @bugfix Codex 11/10/2026 Mount bundled base-game archives only via the fallback pass.
+		if (GameAssetRoot::isNestedInstallation(it->str(), dir.isEmpty() ? "." : dir.str())) {
+			++it;
+			continue;
+		}
 #if RTS_ZEROHOUR
 		// TheSuperHackers @bugfix bobtista 18/11/2025 Skip duplicate INIZH.big in Data\INI to prevent CRC mismatches.
 		// English, Chinese, and Korean SKUs shipped with two INIZH.big files (one in Run directory, one in Run\Data\INI).

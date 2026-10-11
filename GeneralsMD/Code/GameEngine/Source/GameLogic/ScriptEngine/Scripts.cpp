@@ -540,19 +540,29 @@ Bool ScriptList::ParseScriptsDataChunk(DataChunkInput &file, DataChunkInfo *info
 		deleteInstance(s_readLists[i]);
 		s_readLists[i] = nullptr;
 	}
+	// GeneralsX @bugfix Codex 11/10/2026 Release partial script lists on failed reads and allow retry.
+	s_numInReadList = 0;
 	TScriptListReadInfo readInfo;
 	for (i=0; i<MAX_PLAYER_COUNT; i++) {
 		readInfo.readLists[i] = nullptr;
 	}
 	readInfo.numLists = 0;
-	if (file.parse(&readInfo)) {
-		DEBUG_ASSERTCRASH(readInfo.numLists<MAX_PLAYER_COUNT, ("Read too many, overrun buffer."));
+	Bool parsed;
+	try {
+		parsed = file.parse(&readInfo);
+	} catch (...) {
+		for (i = 0; i < readInfo.numLists; ++i) deleteInstance(readInfo.readLists[i]);
+		throw;
+	}
+	if (parsed) {
+		DEBUG_ASSERTCRASH(readInfo.numLists<=MAX_PLAYER_COUNT, ("Read too many, overrun buffer."));
 		s_numInReadList = readInfo.numLists;
 		for (i=0; i<s_numInReadList; i++) {
 			s_readLists[i] = readInfo.readLists[i];
 		}
 		return true;
 	}
+	for (i = 0; i < readInfo.numLists; ++i) deleteInstance(readInfo.readLists[i]);
 	return false;
 }
 
